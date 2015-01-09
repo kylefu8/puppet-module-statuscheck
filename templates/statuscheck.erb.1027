@@ -1,0 +1,688 @@
+#!/bin/bash
+#####################################################################
+# Check functions and log in a file.
+#
+# Name:             statuscheck.sh
+# Location:         /usr/local/sbin
+# Created base on functioncheck.sh from SELN. Thanks to Jonas Jerlin!
+# Create: 2014-09-20, Kyle Fu. Rewrite the script from functioncheck.sh
+# Update: 2014-09-26, Kyle Fu. Add Simple Status for OS.
+# Update: 2014-10-15, Kyle Fu. Add bash bug check.
+# Update: 2014-10-16, Kyle Fu. Add script path and puppet last run.
+
+PATH=/usr/afsws/bin:$PATH
+
+#####################################################################
+# Parse commandline
+#
+INTERACTIVE=0;
+while [ ! -z "$1" ]
+do
+  case "$1" in
+    -i|--interactive) INTERACTIVE=1 ;;
+    *) echo  "Unsupported option $1" ;;
+  esac
+  shift
+done
+
+if [ $INTERACTIVE -eq 0 ]; then
+	# Wait up to 2 minutes
+	sleep `cksum /etc/hosts | awk '{print $1'\%'120}'`
+else
+	if [ ! -w / ]; then 
+		echo "Script $0 must be run as root"; 
+		exit 1
+	fi
+fi
+
+#####################################################################
+# Check if /proj/cnshrepo/statuscheck is mounted.
+# If no, try to create the folder and mount it.
+# If mount failed create the file in /var/hubcron/temp/statuscheckmount/ with hostname.
+df -h /proj/cnshrepo/statuscheck | grep volp0307 > /dev/null
+if [ $? != 0 ]; then
+#  echo "Mount Error"
+    if [ ! -d /proj/cnshrepo ]; then
+#      echo "Creating /proj/cnshrepo"
+      mkdir -p /proj/cnshrepo
+  fi
+#  echo "Mounting /proj/cnshrepo"
+  mount cnshna003-v2:/vol/volp0307/cnshrepo /proj/cnshrepo
+  if [ $? != 0 ]; then
+    touch /var/hubcron/temp/statuscheckmount/$HOSTNAME
+  fi
+fi
+
+#####################################################################
+# Check for writeable directory for our output
+Hostname=`uname -n | cut -d"." -f1` # Hostname used inside ()
+OutputDir=/proj/cnshrepo/statuscheck/logs/
+LocalReportFile=/var/tmp/$Hostname.FunctionReport
+ReportFile=/proj/cnshrepo/statuscheck/logs/$Hostname.report
+# Check for writability
+touch $ReportFile
+if [ $? -ne 0 ]; then
+   echo "No writeable output directory ${OutputDir} for status check, exiting."
+   exit
+fi
+
+# Check the path for this script
+ScriptPath="${BASH_SOURCE[0]}";
+if ([ -h "${ScriptPath}" ]) then
+  while([ -h "${ScriptPath}" ]) do SCRIPT_PATH=`readlink "${ScriptPath}"`; done
+fi
+pushd . > /dev/null
+cd `dirname ${ScriptPath}` > /dev/null
+ScriptPath=`pwd`;
+popd  > /dev/null
+
+# RecordStartTime
+if [ "`uname -s`" = "SunOS" ]; then
+   StartTime=`/usr/bin/truss /usr/bin/date 2>&1 |  nawk -F= '/^time\(\)/ {gsub(/ /,"",$2);p    rint $2}'`
+else
+   StartTime=`date +%s`
+fi
+
+#####################################################################
+# Uptime logging
+CheckTime=`date +"%Y-%m-%d %H:%M"`
+#Hostname=`uname -n | cut -d"." -f1` # Hostname used inside ()
+Uptime=`uptime | awk '{ print $3 $4}' | cut -d',' -f1 | sed s/\(s\)/s/g` #Uptime for mins or days
+#UPtime=${Uptime/\(s\)/s}
+
+#####################################################################
+# Check bash bug
+######
+BC=`/proj/cnshrepo/statuscheck/scripts/bashcheck | grep Vulnerable`
+if [[ $BC -eq 0 ]]; then
+   BASH_BUG="NoBug"
+else
+   BASH_BUG="Vulnerable"
+   /proj/cnshrepo/fixbash/fixbash.sh
+fi
+
+#####################################################################
+# Check Os
+##############################
+# Which BIOS is this?
+HWModel=""
+BIOSReleaseDate=""
+
+if [ "`uname -s`" = "Linux" ]; then
+        HWModel=`/usr/sbin/dmidecode | grep "Product Name:" | head -1 |  awk '{print $NF}'`
+        if [ "$HWModel" = "Platform" ]; then    # Suspect VMware
+                /usr/sbin/dmidecode | grep "Product Name:" | head -1 | grep -q VMware
+                if [ $? -eq 0 ]; then
+                        HWModel="Virtual"
+                fi
+        fi
+
+        BIOSReleaseDate=`/usr/sbin/dmidecode | grep "Release Date:" | awk '{print $NF}'`
+fi
+if [ "`uname -s`" = "SunOS" ]; then
+        HWModel=`/usr/sbin/smbios | grep "Product: ProLiant" | head -1 |  awk '{print $NF}'`
+        BIOSReleaseDate=`/usr/sbin/smbios | grep "Release Date:" | head -1 | awk '{print $NF}'`
+fi
+
+##############################
+# CPU, Memory, / Disk usage, Logged on user numbers
+CPU=""
+LoadAverage=""
+MemTotal=""
+MemUsage=""
+DiskAvail=""
+DiskAvailInKB=""
+DiskUsed=""
+UserAmount=`who | awk '{ print $1 }' | sort | uniq | wc -l | sed 's/ //g'`
+ProcessAmount=`ps -ef | wc -l | sed 's/ //g'`
+if [ "`uname -s`" == "Linux" ]; then
+   CPU=`cat /proc/cpuinfo | grep proc | wc -l`
+   MemTotal=`cat /proc/meminfo | grep MemTotal | awk {'print $2'}`"KB"
+   meminfo=`free -m | grep Mem` 
+   currentmem=`echo $meminfo | cut -f3 -d' '`
+   allmem=`echo $meminfo | cut -f2 -d' '`
+   MemUsage=$(echo "scale = 2; $currentmem/$allmem*100" | bc)%
+   LoadAverage=`uptime | grep -o "load.*" | awk {'print $3 $4 $5'} | sed 's/ //g'`
+elif [ "`uname -s`" = "SunOS" ]; then
+   CPU=`psrinfo -vp | head -1 | cut -d' ' -f5`
+   MemTotal=`prtconf | grep Memory | awk {'print $3'}`"MB"
+   MemUsage="***Not Supported**"
+   LoadAverage=`uptime | cut -d':' -f4 | sed 's/ //g'`
+else
+   CPU="CPU"
+   MemTotal="MemTotal"
+fi
+
+dfline=`df -h / | wc -l | sed 's/ //g'`
+if [ "$dfline" == "3" ]; then
+   DiskAvail=`df -h / | grep -v Filesystem | grep '%' | awk {'print $3'}`
+   DiskAvailInKB=`df -k / | grep -v Filesystem | grep '%' | awk {'print $3'}`
+   DiskUsed=`df -h / | grep -v Filesystem | grep '%' | awk {'print $4'}` 
+elif [ "$dfline" == "2" ]; then
+   DiskAvail=`df -h / | grep -v Filesystem | grep '%' | awk {'print $4'}`
+   DiskAvailInKB=`df -k / | grep -v Filesystem | grep '%' | awk {'print $4'}`
+   DiskUsed=`df -h / | grep -v Filesystem | grep '%' | awk {'print $5'}`
+else
+   DiskAvail="DiskAvail"
+   DiskUsed="DiskUsed"
+fi
+
+##############################
+# Which OS is this?
+# Make OS Release short
+
+OS=`uname -s`
+# Process SunOS
+if [ "$OS" = "SunOS" ]; then
+   KernelVer=`uname -v`
+   OsRel=`uname -s``uname -r`"("`uname -p`")"
+else
+   KernelVer=`uname -r`
+   OsRel=""
+# Process Red Hat & CentOS
+   if [ -r /etc/redhat-release ]; then
+      RR=`head -1 /etc/redhat-release | cut -d' ' -f1`
+      if [ "$RR" == "Red" ]; then
+         OsRel="RHEL"`cat /etc/redhat-release | cut -d' ' -f7`"("`uname -m`")"
+      elif [ "$RR" == "CentOS" ]; then
+         OsRel="CentOS"`cat /etc/redhat-release | cut -d' ' -f3`"("`uname -m`")"
+      else
+         OsRel=`cat /etc/redhat-release`
+      fi
+# Process SUSE and openSUSE
+   elif [ -r /etc/SuSE-release ]; then
+      SS=`head -1 /etc/SuSE-release | cut -d' ' -f1`
+      if [ "$SS" == "openSUSE" ]; then
+         Suse1=`head -1 /etc/SuSE-release | cut -d' ' -f2`
+         Suse2=`head -1 /etc/SuSE-release | cut -d' ' -f3`
+         OsRel="oSUSE"$Suse1$Suse2
+      else
+         Suse1=`head -1 /etc/SuSE-release | cut -d' ' -f4`
+         Suse2=`cat /etc/SuSE-release | grep VERSION | cut -d' ' -f3`.`tail -1 /etc/SuSE-release | cut -d' ' -f3``head -1 /etc/SuSE-release | cut -d' ' -f6`
+         OsRel="SLE"${Suse1:0:1}$Suse2
+      fi
+# Process Ubuntu
+   elif [ -r /etc/lsb-release ]; then
+      UU=`grep "_ID" /etc/lsb-release | cut -d'=' -f2`
+      if [ "$UU" == "Ubuntu" ]; then
+         OsRel="Ubuntu"`grep '_RELEASE' /etc/lsb-release | cut -d'=' -f2`"("`uname -p`")"
+      else
+         OsRel=`tail -1 /etc/lsb-release`
+      fi
+# Process Others
+   elif [ -r /etc/release ]; then
+      OsRel=`head -1 /etc/release | sed -e 's/   *//g'`
+   fi
+fi
+
+##############################
+# Which rndrelease is this?
+if [ -f /etc/rndrelease ]; then
+#   ServerClient=`egrep "SERVER|CLIENT" /etc/rndrelease`
+   ServerClient=`cat /etc/rndrelease`
+   if [ "${ServerClient}" = "" ]; then 
+     ServerClient="No info"
+   fi
+else
+   ServerClient="No rndrelease" 
+fi
+
+##############################
+# Which Puppet is installed?
+PuppetVersion=`puppet -V`
+if [ -z "$PuppetVersion" ]; then
+   PuppetVersion="NoPuppet"
+   PuppetLastRun="NoPuppet"
+else
+   PuppetLastRun=`grep puppet-agent /var/log/messages | grep Finished | cut -d' ' -f1,2,3,10,11 | tail -1`
+fi
+
+#####################################################################
+# Check QAS
+testaccount="eliifuu"
+testproj="cnshrepo"
+QASVersion=""
+QASStatus=""
+QASDomain=""
+QASADSite=""
+QASUserAmount=""
+QASGroupAmount=""
+YPUserAmountCharacters=""
+YPGroupAmountCharacters=""
+HomeMount=""
+ProjMount=""
+
+if [ -x /opt/quest/bin/vastool ]; then
+   QASVersion="`/opt/quest/bin/vastool -v | head -1 | cut -d' ' -f4`" # Check QAS Version
+   tempvasstatus="`/opt/quest/bin/vastool status -v | grep '^Result'`" # Check QAS Status
+   if [ `echo $tempvasstatus | grep No | wc -l` = 1 ]; then
+      QASStatus="OK"
+   elif [ `echo $tempvasstatus | grep warnings | wc -l` = 1 ]; then
+      QASStatus="Warning"
+   else
+      QASStatus="Failed"
+   fi
+   QASDomain="`/opt/quest/bin/vastool info domain`"  # Check QAS Domain info
+   QASADSite="`/opt/quest/bin/vastool info site`" # Check QAS Site info
+   QASUserAmount="`/opt/quest/bin/vastool list users | wc -l | sed 's/ //g'`"
+   QASGroupAmount="`/opt/quest/bin/vastool list groups | wc -l | sed 's/ //g'`"
+   YPUserAmountCharacters="`ypcat passwd| wc -m | sed 's/ //g'`"
+   YPGroupAmountCharacters="`ypcat group| wc -m | sed 's/ //g'`"
+   if [ "$OS" = "Linux" ]; then
+      HomeMount="`su $testaccount -c 'df -k ~' | egrep -v 'Sun Microsystems Inc|Oracle Corporation' | head -2 | tail -1 | cut -d':' -f1`"
+   else
+      HomeMount="`su - $testaccount -c 'df -k ~' | egrep -v 'Sun Microsystems Inc|Oracle Corporation' | head -2 | tail -1 | cut -d':' -f1`"
+   fi
+   ProjMount="`df -k /proj/$testproj/ | head -2 | tail -1 | cut -d':' -f1`"
+else
+   QASVersion="NoQAS"
+   QASStatus="Skip"
+   QASDomain="Skip"
+   QASADSite="Skip"
+   QASUserAmount="Skip"
+   QASGroupAmount="Skip"
+   YPUserAmountCharacters="Skip"
+   YPGroupAmountCharacters="Skip"
+   HomeMount="Skip"
+   ProjMount="Skip"
+fi
+
+#####################################################################
+# Check Clearcase
+
+CT=/usr/atria/bin/cleartool
+CCTestVob=checkvob_test
+CCTestView=checkvob_view
+CCVersion="NoCC"
+CCVobsAmount="Skip"
+CCVobsMountedAmount="Skip"
+CCTestVobMount="Skip"
+CCTestVobLs="Skip"
+CCTestVobLsStatus="Skip"
+CCTestVobUmount="Skip"
+
+# Check if Clearcase installed
+if [ -f $CT ]; then
+   CCVersion="`/usr/atria/bin/cleartool -ver | grep 'ClearCase version' | sort | tail -1 | awk '{print $3}' | sed 's/ //g'`"
+   CCVobsAmount=`$CT lsvob | wc -l | sed 's/ //g' | awk '{print $1}'`
+   CCVobsMountedAmount=`$CT lsvob | grep '^\*' | wc -l | sed 's/ //g' | awk '{print $1}'`
+
+   # Check VOB mount
+   if [ "`$CT lsvob /vobs/${CCTestVob} | grep '^\*'`" = "" ]; then
+      ${CT} mount /vobs/${CCTestVob}
+      RC=$?
+      if [ $RC != 0 ]; then
+         CCTestVobMount="Mount Error"
+      else 
+         CCTestVobMount="Mount OK"
+      fi
+   else
+      CCTestVobMount="Mount OK"
+   fi
+   
+   # Check ls files
+   if [ "$CCTestVobMount" = "Mount OK" ]; then
+#      CCTestVobLs=`$CT ls /vobs/${CCVob} | grep /main/LATEST | wc -l | sed 's/ //g' | awk '{print $1}'`
+      CCTestVobLs=`$CT setview -exec "$CT ls /vobs/$CCTestVob" $CCTestView | grep /main/LATEST | wc -l | sed 's/ //g' | awk '{print $1}'`
+      RC=$?
+      if [ $RC -ne 0 ]; then
+         CCTestVobLs="ls Error"
+         CCTestVobLsStatus="ls Error"
+      else  
+         CCTestVobLsStatus="ls OK"
+         if [ "$CCTestVobLs" = "0" ]; then
+            CCTestVobLs="0 !"
+         fi
+      fi         
+   fi
+
+   # Check VOB umount
+   $CT umount /vobs/${CCTestVob}
+   RC=$?
+   if [ $RC -eq 0 ]; then
+      CCTestVobUmount="Umount OK"
+   else
+      CCTestVobUmount="Umount Error"
+   fi
+fi
+
+#####################################################################
+# Check AFS
+AFSVersion="NoAFS"
+AppsAmount=""
+AppsToolboxesAmount=""
+GetCellStatus=""
+
+if [ "`uname -s`" = "Linux" ]; then
+   AFSVersion=`rpm -qa  | grep openafs | egrep  "openafs-[0-9]|openafsrhel-[0-9]|openafssuse-[0-9]|application" | grep -v "dkms" | grep -v "kmod" | sed 's/openafs-//g' | sed 's/openafsrhel-//g' | sed 's/openafssuse//g'`
+   if [ -z "$AFSVersion" ]; then
+      AFSVersion="NoAFS"
+   fi
+fi
+if [ "`uname -s`" = "SunOS" ]; then
+   afstemp="`pkginfo | grep openafs`"
+   if [ -n "$afstemp" ]; then
+      AFSVersion=`pkginfo | grep openafs | awk {'print $2'} | xargs pkginfo -x | tail -1 | sed 's/ //g'`
+   fi
+fi
+
+if [ "$AFSVersion" != "NoAFS" ]; then
+   AppsAmount=`ls /app 2>&1 | grep -v 'No such' | wc -l | awk '{print $1}' | sed 's/ //g'`
+   AppsToolboxesAmount=`ls /app/toolboxes 2>&1 | grep -v 'No such' | wc -l | awk '{print $1}' | sed 's/ //g'`
+   if [ -x /usr/bin/fs ]; then
+      GetCellStatus=`fs getcell sunrise.ericsson.se | cut -d':' -f2 | cut -d' ' -f2 | sed 's/ //g'`
+   else 
+      GetCellStatus="fs not found"
+   fi 
+else
+   AppsAmount="Skip"
+   AppsToolboxesAmount="Skip"
+   GetCellStatus="Skip"
+fi
+
+
+#####################################################################
+# Calculate Script Run Time
+if [ "`uname -s`" = "SunOS" ]; then
+   EndTime=`/usr/bin/truss /usr/bin/date 2>&1 |  nawk -F= '/^time\(\)/ {gsub(/ /,"",$2);print $2}'`
+else
+   EndTime=`date +%s`
+fi
+ScriptRunTime=$((EndTime - StartTime))"s"
+
+#####################################################################
+# Make simple status
+OSStatus_S=""
+OSStatus_F=""
+QASStatus_S=""
+QASStatus_F=""
+CCStatus_S=""
+CCStatus_F=""
+AFSStatus_S=""
+AFSStatus_F=""
+
+###############################
+# OS simple status
+# CPU Load check. Normal: CPU * 700 > (LoadAverage1 + LoadAverage2) * 500
+#loadav1p100=`echo $LoadAverage | cut -d',' -f1 | sed 's/\.//g' | sed 's/^0*//g'`
+#loadav2p100=`echo $LoadAverage | cut -d',' -f2 | sed 's/\.//g' | sed 's/^0*//g'`
+loadav1p100=`echo $LoadAverage | cut -d',' -f1 | sed 's/\.//g' `
+loadav2p100=`echo $LoadAverage | cut -d',' -f2 | sed 's/\.//g' `
+loadav=`expr $loadav1p100 + $loadav2p100`
+if [ `expr $CPU \* 700` -lt `expr $loadav \* 5` ]; then
+   OSStatus_S="Warning"
+   OSStatus_F="CPU Load High. "
+else
+   OSStatus_F="CPU OK. "
+fi
+
+# / Disk DiskAvail Check. Normal: / Avail > 300MB
+if [ `expr $DiskAvailInKB - 307200` -lt 0 ]; then
+   OSStatus_S="Warning" 
+   OSStatus_F=$OSStatus_F"Disk(/) left $DiskAvail. " 
+else
+   OSStatus_F=$OSStatus_F"Disk(/) OK. "
+fi
+
+# Make final decision for OS stauts
+if [ -z "$OSStatus_S" ]; then
+   OSStatus_S="OK"
+fi
+
+
+###############################
+# QAS simple status
+# Threshold for some keys
+if [ "$QASVersion" = "NoQAS" ]; then
+   QASStatus_S="NoQAS"
+   QASStatus_F="NoQAS"
+else 
+   QASLatestVer_th="4.1.0.21158"
+   QASStatus_th="OK"
+   QASDomain_th="rnd.ericsson.se"
+   QASADSite_th="Sapac09"
+   QASUserAmount_th=2200
+   QASGroupAmount_th=190
+   YPUserAmountCharacters_th=140000
+   YPGroupAmountCharacters_th=2700
+   HomeMount_th="cnshna"
+   ProjMount_th="cnshna"
+   
+   if [ $QASVersion = $QASLatestVer_th ]; then
+      QASStatus_F="QAS Version OK. "
+   else 
+      QASStatus_S="Warning"
+      QASStatus_F="QAS Version old. Please upgrade to $QASLatestVer_th. "
+   fi
+   
+   if [ $QASStatus = $QASStatus_th ]; then
+      QASStatus_F=$QASStatus_F"QAS Status OK. "
+   else
+      QASStatus_S="Warning"
+      QASStatus_F=$QASStatus_F"QAS Status $QASStatus. "
+   fi
+   
+   if [ $QASDomain = $QASDomain_th ]; then
+      QASStatus_F=$QASStatus_F"Domain OK. "
+   else
+      QASStatus_S="Warning"
+      QASStatus_F=$QASStatus_F"Domain should be $QASDomain_th. "
+   fi
+   
+   if [ $QASADSite = $QASADSite_th ]; then
+      QASStatus_F=$QASStatus_F"AD Site OK. "
+   else
+      QASStatus_S="Warning"
+      QASStatus_F=$QASStatus_F"AD Site should be $QASADSite_th. "
+   fi
+   
+   if [ `expr $QASUserAmount - $QASUserAmount_th` -gt 0 ] && [ `expr $YPUserAmountCharacters - $YPUserAmountCharacters_th` -gt 0 ]; then
+      QASStatus_F=$QASStatus_F"User amount OK. "
+   else
+      QASStatus_S="Warning"
+      QASStatus_F=$QASStatus_F"User missing. "
+   fi
+   
+   if [ `expr $QASGroupAmount - $QASGroupAmount_th` -gt 0 ] && [ `expr $YPGroupAmountCharacters - $YPGroupAmountCharacters_th` -gt 0 ]; then
+      QASStatus_F=$QASStatus_F"Group amount OK. "
+   else
+      QASStatus_S="Warning"
+      QASStatus_F=$QASStatus_F"Group missing. "
+   fi
+   
+   if [[ ${HomeMount:0:6} -eq $HomeMount_th ]]; then
+      QASStatus_F=$QASStatus_F"Home folder mount OK. "
+   else
+      QASStatus_S="Warning"
+      QASStatus_F=$QASStatus_F"Home folder mount error. "
+   fi
+   
+   if [[ ${ProjMount:0:6} -eq $ProjMount_th ]]; then
+      QASStatus_F=$QASStatus_F"Proj folder mount OK. "
+   else
+      QASStatus_S="Warning"
+      QASStatus_F=$QASStatus_F"Proj folder mount error. "
+   fi
+   
+   # Make final decision for QAS
+   if [ -z "$QASStatus_S" ]; then
+      QASStatus_S="OK"
+   fi
+fi
+
+###############################
+# CC simple status
+# Threshold for some keys
+if [ "$CCVersion" = "NoCC" ]; then
+   CCStatus_S="NoCC"
+   CCStatus_F="NoCC"
+else 
+   CCVersion_th="8.0.0.07"
+   CCVobsAmount_th=800
+   CCTestVobMount_th="Mount OK"
+   CCTestVobLs_th="2"
+   CCTestVobLsStatus_th="ls OK"
+   CCTestVobUmount_th="Umount OK"
+
+   ccVersion=`echo $CCVersion | sed 's/\.//g'`
+   ccVersion_th=`echo $CCVersion_th | sed 's/\.//g'`
+#   echo $ccVersion
+#   echo $ccVersion_th
+#   echo `expr $ccVersion_th - $ccVersion - 1`
+   if [ `expr $ccVersion_th - $ccVersion - 1` -lt 0 ]; then
+      CCStatus_F="CC Version OK. "
+   else
+      CCStatus_S="Warning"
+      CCStatus_F="CC Version old. Please upgrade to $CCVersion_th. "
+   fi
+
+   if [ `expr $CCVobsAmount - $CCVobsAmount_th` -ge 0 ]; then
+      CCStatus_F=$CCStatus_F"Vobs amount OK. "
+   else
+      CCStatus_S="Warning"
+      CCStatus_F=$CCStatus_F"Vobs missing. "
+   fi
+
+   if [ "$CCTestVobMount" = "$CCTestVobMount_th" ]; then
+      CCStatus_F=$CCStatus_F"CC Mount OK. "
+   else
+      CCStatus_S="Warning"
+      CCStatus_F=$CCStatus_F"CC Mount error. "
+   fi
+
+   if [ "$CCTestVobLs" = "$CCTestVobLs_th" ] && [ "$CCTestVobLsStatus" = "$CCTestVobLsStatus_th" ]; then
+      CCStatus_F=$CCStatus_F"CC LS OK. "
+   else
+      CCStatus_S="Warning"
+      CCStatus_F=$CCStatus_F"CC LS error. "
+   fi
+
+   if [ "$CCTestVobUmount" = "$CCTestVobUmount_th" ]; then
+      CCStatus_F=$CCStatus_F"CC Umount OK. "
+   else
+      CCStatus_S="Warning"
+      CCStatus_F=$CCStatus_F"CC Umount error. "
+   fi
+
+   # Make final decision for CC
+   if [ -z "$CCStatus_S" ]; then
+      OSStatus_S="OK"
+   fi
+fi
+
+###############################
+# CC simple status
+# Threshold for some keys
+if [ "$AFSVersion" = "NoAFS" ]; then
+   AFSStatus_S="NoAFS"
+   AFSStatus_F="NoAFS"
+else
+   AFSVersion_th=1.6.6
+   AppsAmount_th=750
+   AppsToolboxesAmount_th=60
+   GetCellStatus_th="setuid"
+
+   #afsVersion=`echo $AFSVersion | sed 's/[^*\)]//g' | sed 's/\.//g'`
+   afsVersion=`echo $AFSVersion | sed 's/(.*)//g' | sed 's/\.//g' | cut -c 1-3`
+   afsVersion_th=`echo $AFSVersion_th | sed 's/\.//g'`
+#   echo $afsVersion
+#   echo $afsVersion_th
+#   echo `expr $afsVersion_th - $afsVersion - 1`
+   # The Threshold is 1.6.6, but upto 1.6.2 is fine. That's why less than 5( -lt 5 ) is ok.
+   if [ `expr $afsVersion_th - $afsVersion - 1` -lt 5 ]; then
+      AFSStatus_F="AFS Version OK. "
+   else
+      AFSStatus_S="Warning"
+      AFSStatus_F="AFS Version old. Please at least upgrade to $AFSVersion_th. "
+   fi
+
+   if [ `expr $AppsAmount_th - $AppsAmount` -lt 0 ]; then
+      AFSStatus_F="AFS Apps Amount OK. "
+   else
+      AFSStatus_S="Warning"
+      AFSStatus_F="AFS Apps missing. "
+   fi
+   
+   if [ `expr $AppsToolboxesAmount_th - $AppsToolboxesAmount` -lt 0 ]; then
+      AFSStatus_F=$AFSStatus_F"AFS Apps Toolboxes Amount OK. "
+   else
+      AFSStatus_S="Warning"
+      AFSStatus_F=$AFSStatus_F"AFS Apps Toolboxes missing. "
+   fi
+
+   if [ "$GetCellStatus_th" = "$GetCellStatus" ]; then
+      AFSStatus_F=$AFSStatus_F"AFS Cell Status OK."
+   else
+      AFSStatus_S="Warning"
+      AFSStatus_F=$AFSStatus_F"AFS Cell Status Error. "
+   fi  
+
+   # Make final decision for AFS
+   if [ -z "$AFSStatus_S" ]; then
+      AFSStatus_S="OK"
+   fi
+fi
+
+
+#####################################################################
+# Generate the log file and save to proj.
+(
+   echo "--Detailed Status-----------------------------"
+   echo "Hostname                      = $Hostname"
+   echo "CheckTime                     = $CheckTime"
+   echo "ScriptRunTime                 = $ScriptRunTime"
+   echo "ScriptPath                    = $ScriptPath"
+   echo "Bash Bug Check                = $BASH_BUG"
+   echo "Uptime                        = $Uptime"
+   echo "HWModel                       = $HWModel"
+   echo "BIOSReleaseDate               = $BIOSReleaseDate"
+   echo "OS Type                       = $OS"
+   echo "OS Release                    = $OsRel"
+   echo "Kernel Version                = $KernelVer"
+   echo "Managed Workplace             = $ServerClient"
+   echo "CPU                           = $CPU"
+   echo "LoadAverage                   = $LoadAverage"
+   echo "MemTotal                      = $MemTotal"
+   echo "MemUsage                      = $MemUsage"
+   echo "DiskAvail(/)                  = $DiskAvail"
+   echo "DiskAvailInKB(/)              = $DiskAvailInKB"
+   echo "DiskUsed(/)                   = $DiskUsed"
+   echo "UserAmount                    = $UserAmount"
+   echo "ProcessAmount                 = $ProcessAmount"
+   echo "PuppetVersion                 = $PuppetVersion"
+   echo "PuppetLastRun                 = $PuppetLastRun"
+   echo "QASVersion                    = $QASVersion"
+   echo "QASStatus                     = $QASStatus"
+   echo "QASDomain                     = $QASDomain"
+   echo "QASADSite                     = $QASADSite"
+   echo "QASUserAmount                 = $QASUserAmount"
+   echo "QASGroupAmount                = $QASGroupAmount"
+   echo "YPUserAmountCharacters        = $YPUserAmountCharacters"
+   echo "YPGroupAmountCharacters       = $YPGroupAmountCharacters"
+   echo "HomeMount                     = $HomeMount"
+   echo "ProjMount                     = $ProjMount"
+   echo "CCVersion                     = $CCVersion"
+   echo "CCVobsAmount                  = $CCVobsAmount"
+   echo "CCVobsMountedAmount           = $CCVobsMountedAmount"
+   echo "CCTestVobMount                = $CCTestVobMount"
+   echo "CCTestVobLs                   = $CCTestVobLs"
+   echo "CCTestVobLsStatus             = $CCTestVobLsStatus"
+   echo "CCTestVobUmount               = $CCTestVobUmount"
+   echo "AFSVersion                    = $AFSVersion"
+   echo "AppsAmount                    = $AppsAmount"
+   echo "AppsToolboxesAmount           = $AppsToolboxesAmount"
+   echo "GetCellStatus                 = $GetCellStatus"
+   echo "--Simple Status-------------------------------"
+   echo "OSStatus_S                    = $OSStatus_S"
+   echo "OSStatus_F                    = $OSStatus_F"
+   echo "QASStatus_S                   = $QASStatus_S"
+   echo "QASStatus_F                   = $QASStatus_F"
+   echo "CCStatus_S                    = $CCStatus_S"
+   echo "CCStatus_F                    = $CCStatus_F"
+   echo "AFSStatus_S                   = $AFSStatus_S"
+   echo "AFSStatus_F                   = $AFSStatus_F"
+   
+) > ${LocalReportFile}
+
+cat $LocalReportFile
+cp $LocalReportFile $ReportFile

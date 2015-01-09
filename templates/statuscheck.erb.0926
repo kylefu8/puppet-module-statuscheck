@@ -1,0 +1,317 @@
+#!/bin/sh
+
+#####################################################################
+#
+# Check basic functions and log in a file.
+#
+# Old Name:             functioncheck.sh
+# New Name:             statuscheck.sh
+# Location:         /usr/local/sbin
+# Ori Update: 2014-07-09, ejonaje
+# Extended test of AFS, number of entries in /app/toolboxes are counted
+# Migrated to Shanghai HUB by eliifuu
+# Update: 2014-09-04, ejonaje, eliifuu, Added check of suid, if set or not
+# Update: 2014-09-20, eliifuu, Added mount cnshrepo check
+
+PATH=/usr/afsws/bin:$PATH
+
+#
+INTERACTIVE=0;
+#
+# Parse commandline
+#
+while [ ! -z "$1" ]
+do
+  case "$1" in
+    -i|--interactive) INTERACTIVE=1 ;;
+    *)                echo  "Unsupported option $1" ;;
+  esac
+  shift
+done
+
+if [ $INTERACTIVE -eq 0 ]; then
+	# Wait up to 2 minutes
+	sleep `cksum /etc/hosts | awk '{print $1'\%'120}'`
+else
+	if [ ! -w / ]; then 
+		echo "Script $0 must be run as root"; 
+		exit 1
+	fi
+fi
+
+
+# Check if /proj/cnshrepo/statuscheck is mounted.
+# If no, try to create the folder and mount it.
+# If mount failed create the file in /var/hubcron/temp/statuscheckmount/ with hostname.
+df -h /proj/cnshrepo/statuscheck | grep volp0307
+if [ $? != 0 ]; then
+#  echo "Mount Error"
+    if [ ! -d /proj/cnshrepo ]; then
+#      echo "Creating /proj/cnshrepo"
+      mkdir -p /proj/cnshrepo
+  fi
+#  echo "Mounting /proj/cnshrepo"
+  mount cnshna003-v2:/vol/volp0307/cnshrepo /proj/cnshrepo
+  if [ $? != 0 ]; then
+    touch /var/hubcron/temp/statuscheckmount/$HOSTNAME
+  fi
+fi
+
+
+# Home directory to check, have to be readable by root.
+# Used for automount test
+# ----- HomeDir=/home/selnhubadm
+HomeDir=/home/eliifuu
+#
+# ClearCase test view
+CCView=checkvob_view
+#
+# ClearCase test vob
+CCVob=checkvob_test
+#
+# ----- functiontestCC=/proj/selnhubadm/Serverinfo/Functiontest/scripts/site.FunctionCheckCC
+functiontestCC=/proj/cnshrepo/statuscheck/scripts/site.FunctionCheckCC
+# Whats my name ?
+Hostname="`uname -n | cut -d'.' -f1`"
+
+# When ?
+Now=`date +"%Y-%m-%d.%H:%M.%S"`
+
+# Check for writeable directory for our output
+# ----- OutputDir=/proj/selnhubadm/Serverinfo/Functiontest/logs/
+OutputDir=/proj/cnshrepo/statuscheck/logs/
+LocalReportFile=/var/tmp/$Hostname.FunctionReport
+# ----- ReportFile=/proj/selnhubadm/Serverinfo/Functiontest/logs/$Hostname.report
+ReportFile=/proj/cnshrepo/statuscheck/logs/$Hostname.report
+
+# Check for writability
+touch $ReportFile
+if [ $? -ne 0 ]; then
+   echo "No writeable output directory ${OutputDir} for function check, exiting"
+   exit
+fi
+
+(  # All output is saved in a file 
+
+#####################################################################
+# Which OS is this?
+
+OS=`uname -s`
+if [ "$OS" = "SunOS" ]; then
+   OsRel=`uname -rv`
+else
+   OsRel=`uname -r`
+fi
+
+ServerClient="No 'SERVER' or 'CLIENT' found in /etc/rndrelease"
+if [ -f /etc/rndrelease ]; then
+   ServerClient=`egrep "SERVER|CLIENT" /etc/rndrelease`
+   if [ "${ServerClient}" = "" ]; then ServerClient="No info found in /etc/rndrelese"; fi
+else
+   ServerClient="No /etc/rndrelease found"
+fi
+
+OsRel2=""
+if [ -f /etc/redhat-release ]; then
+   OsRel2=`cat /etc/redhat-release`
+elif [ -r /etc/SuSE-release ]; then
+   OsRel2="`head -1 /etc/SuSE-release` `grep PATCHLEVEL /etc/SuSE-release`"
+elif [ -r /etc/release ]; then
+   OsRel2=`head -1 /etc/release | sed -e 's/   *//g'`
+fi
+
+echo "OS                            = $OS $OsRel $OsRel2"
+echo "Managed Workplace             = $ServerClient"
+
+#####################################################################
+# Which BIOS is this?
+HWModel=""
+BIOSReleaseDate=""
+
+if [ "`uname -s`" = "Linux" ]; then
+	HWModel=`/usr/sbin/dmidecode | grep "Product Name:" | head -1 |  awk '{print $NF}'`
+	if [ "$HWModel" = "Platform" ]; then	# Suspect VMware
+		/usr/sbin/dmidecode | grep "Product Name:" | head -1 | grep -q VMware
+		if [ $? -eq 0 ]; then
+			HWModel="Virtual"
+		fi
+	fi  
+
+	BIOSReleaseDate=`/usr/sbin/dmidecode | grep "Release Date:" | awk '{print $NF}'`
+fi
+if [ "`uname -s`" = "SunOS" ]; then
+	HWModel=`/usr/sbin/smbios | grep "Product: ProLiant" | head -1 |  awk '{print $NF}'`
+	BIOSReleaseDate=`/usr/sbin/smbios | grep "Release Date:" | head -1 | awk '{print $NF}'`
+fi
+
+echo "HWModel BIOSReleaseDate       = $HWModel $BIOSReleaseDate"
+
+#####################################################################
+
+
+#####################################################################
+# Uptime logging
+Date=`date +"%Y-%m-%d.%H:%M"`
+Hostname=`uname -n | cut -d"." -f1` # Hostname used inside ()
+Uptime="${Date}: `who -b | cut -d'm' -f2`. Uptime: `uptime | cut -d',' -f1` `uptime | cut -d',' -f2 | grep -v user`"
+
+echo "Hostname                      = $Hostname"
+echo "Date                          = $Date"
+echo "Boot and uptime               = $Uptime"
+if [ -f /proc/uptime ]; then
+	echo "/proc/uptime                  = `cat /proc/uptime`"
+else
+	echo "/proc/uptime                  = Missing"
+fi
+
+####################################################################
+# VAS version
+
+if [ -x /opt/quest/bin/vastool ]; then
+      VAS_version="`/opt/quest/bin/vastool -v | head -1 | cut -d":" -f2`"
+else
+      VAS_version="/opt/quest/bin/vastool not found or is not executable."
+fi
+
+echo "VAS version                   = $VAS_version"
+
+####################################################################
+# VAStool status
+
+if [ -x /opt/quest/bin/vastool ]; then
+      VAS_status="`/opt/quest/bin/vastool status -v | grep '^Result' `"
+else
+      VAS_status="/opt/quest/bin/vastool not found or is not executable."
+fi
+
+echo "VAS status                    = $VAS_status"
+
+####################################################################
+# AD site
+
+if [ -x /opt/quest/bin/vastool ]; then
+      AD_site="`/opt/quest/bin/vastool info site`"
+else
+      AD_site="/opt/quest/bin/vastool not found or is not executable."
+fi
+
+echo "AD site                       = $AD_site"
+
+####################################################################
+# AD servers
+
+if [ -x /opt/quest/bin/vastool ]; then
+      AD_serverlines="`/opt/quest/bin/vastool info servers |tail`"
+      AD_servers="`echo $AD_serverlines`"
+else
+      AD_servers="/opt/quest/bin/vastool not found or is not executable."
+fi
+
+echo "AD servers                    = $AD_servers"
+
+#####################################################################
+# Clearcase
+
+CT=/usr/atria/bin/cleartool 
+
+Clearcase="No /usr/atria/bin/cleartool found"
+if [ -f /usr/atria/bin/cleartool ]; then
+	Clearcase="`/usr/atria/bin/cleartool -ver | grep 'ClearCase version' | sort | tail -1`"
+fi
+
+echo "Clearcase version             = $Clearcase"
+
+# The test VOB should now be mounted.
+
+### ClearCase count files in VOB  test
+
+if [ -x $functiontestCC ]; then
+   $CT setview -exec $functiontestCC $CCView
+fi # if $functiontestCC is executable
+
+#####################################################################
+# AFS
+
+if [ "`uname -s`" = "Linux" ]; then
+      AFSver=`rpm -qa  | grep openafs | egrep  "openafs-[0-9]|openafsrhel-[0-9]|openafssuse-[0-9]|application" | grep -v "dkms" | grep -v "kmod" | sed 's/openafs-//g' | sed 's/openafsrhel-//g' | sed 's/openafssuse//g'`
+fi
+
+if [ "`uname -s`" = "SunOS" ]; then
+	AFSver=`pkginfo  | grep openafs | egrep  "openafs-[0-9]|openafsrhel-[0-9]|openafssuse-[0-9]|application" | sed 's/openafs-//g' | sed 's/openafsrhel-//g' | sed 's/openafssuse-//g'`
+	if [ -n "$AFSver" ]; then
+		 AFSver=`echo $AFSver | awk '{print $2}'`
+		 AFSver="$AFSver `echo $AFSver | xargs pkginfo -x | tail -1`"
+	fi
+fi
+
+echo "AFS version                   = $AFSver"
+
+#####################################################################
+# VAS check
+
+UserList="/opt/quest/bin/vastool list users"
+GroupList="/opt/quest/bin/vastool list groups"
+NoUsers=`$UserList | wc -l`
+NoGroups=`$GroupList | wc -l`
+
+echo "VAS function check=   $UserList | wc -l -> $NoUsers. ypwhich -> `ypwhich`. ypwhich -m -> `ypwhich -m | wc -l`. $GroupList | wc -l -> $NoGroups. "
+
+#####################################################################
+# ypcat check (added to implement a better check, count number of characters instead of lines)
+
+YPUserList="ypcat passwd"
+YPGroupList="ypcat group"
+YPUsers=`$YPUserList | wc -m`
+YPGroups=`$YPGroupList | wc -m`
+
+echo "YP function check=   $YPUserList | wc -m -> $YPUsers. ypwhich -> `ypwhich`. ypwhich -m -> `ypwhich -m | wc -m`. $YPGroupList | wc -m -> $YPGroups. "
+
+#####################################################################
+# AFS check
+
+if [ -L /app ]; then
+	AppList="ls /app"
+	NoApps=`$AppList 2>&1 | grep -v 'No such' | wc -l | awk '{print $1}'`
+    GetCellStatus=`fs getcell sunrise.ericsson.se`
+	# Extended test 2014-07-09 ejonaje
+	NoAppToolboxes=`ls /app/toolboxes 2>&1 | grep -v 'No such' | wc -l | awk '{print $1}'`
+else
+	AppList="No link /app"
+	NoApps=0
+	NoAppToolboxes=0
+    GetCellStatus="N/A"
+fi
+
+echo "AFS function check=   $AppList. $NoApps files in /app $NoAppToolboxes files in /app/toolboxes getcell status $GetCellStatus"
+
+#####################################################################
+# /home test
+
+Hometest="df -k $HomeDir"
+# ----- Hometestsu="`su - selnhubadm -c 'df -k .' | grep -v 'Sun Microsystems Inc' | head -2 | tail -1 | cut -d':' -f1`."
+Hometestsu="`su - eliifuu -c 'df -k .' | grep -v 'Sun Microsystems Inc' | head -2 | tail -1 | cut -d':' -f1`."
+echo "/home function check= $Hometest | head -2 | tail -1 | cut -d':' -f1 -> "\
+     "$Hometestsu"
+###echo "/home function check= $Hometest | head -2 | tail -1 | cut -d':' -f1 -> "\
+###     "`$Hometestsu | head -2 | tail -1 | cut -d':' -f1`."
+
+#####################################################################
+# /proj test
+
+# ----- Command="df -k /proj/selnhubadm/"
+Command="df -k /proj/cnshrepo/"
+echo "/proj function check= $Command | head -2 | tail -1 | cut -d':' -f1 -> "\
+     "`$Command | head -2 | tail -1 | cut -d':' -f1`."
+
+
+Now2=`date +"%Y-%m-%d.%H:%M.%S"`
+echo "Basic function check = start: $Now, end: $Now2"
+
+#####################################################################
+# Additional tests
+
+#echo "NTP check: `ntpq -p`"
+
+ ) > ${LocalReportFile}
+
+cp $LocalReportFile $ReportFile
