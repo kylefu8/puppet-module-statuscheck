@@ -10,8 +10,11 @@
 # Update: 2014-10-15, Kyle Fu. Add bash bug check.
 # Update: 2014-10-16, Kyle Fu. Add script path and puppet last run.
 # Update: 2014-10-27, Kyle Fu. Add CCStatus.
+# Update: 2015-04-01, Kyle Fu. Upload QAS info to Insight.
 
 PATH=/usr/afsws/bin:$PATH
+Dispatcher_URL="http://cnsh.insight.rnd.ericsson.se/dispatcher/doc/create"
+QAS_Store="test-kyle-QAS"
 
 #####################################################################
 # Parse commandline
@@ -66,9 +69,11 @@ fi
 #####################################################################
 # Check for writeable directory for our output
 Hostname=`uname -n | cut -d"." -f1` # Hostname used inside ()
-OutputDir=/proj/cnshrepo/statuscheck/logs/
+OutputDir=/proj/cnshrepo/statuscheck/
+LocalInsightStatus=/var/tmp/$Hostname.InsightStatus
 LocalReportFile=/var/tmp/$Hostname.FunctionReport
 ReportFile=/proj/cnshrepo/statuscheck/logs/$Hostname.report
+InsightStatus=/proj/cnshrepo/statuscheck/insightstatus/$Hostname
 # Check for writability
 touch $ReportFile
 if [ $? -ne 0 ]; then
@@ -284,6 +289,10 @@ if [ -x /opt/quest/bin/vastool ]; then
       HomeMount="`su - $testaccount -c 'df -k ~' | egrep -v 'Sun Microsystems Inc|Oracle Corporation' | head -2 | tail -1 | cut -d':' -f1`"
    fi
    ProjMount="`df -k /proj/$testproj/ | head -2 | tail -1 | cut -d':' -f1`"
+
+#Upload QAS info to Insight
+   /usr/bin/curl -s "$Dispatcher_URL?store=$QAS_Store&Hostname=$Hostname&Version=$QASVersion&User=$QASUserAmount&Group=$QASGroupAmount&Status=$QASStatus&Domain=$QASDomain&ADSite=$QASADSite" > $LocalInsightStatus 2>&1
+
 else
    QASVersion="NoQAS"
    QASStatus="Skip"
@@ -703,3 +712,4 @@ fi
 
 cat $LocalReportFile
 cp $LocalReportFile $ReportFile
+cp $LocalInsightStatus $InsightStatus
