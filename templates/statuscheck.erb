@@ -11,6 +11,7 @@
 # Update: 2014-10-16, Kyle Fu. Add script path and puppet last run.
 # Update: 2014-10-27, Kyle Fu. Add CCStatus.
 # Update: 2015-04-01, Kyle Fu. Upload QAS info to Insight.
+# Update: 2015-04-01, Kyle Fu. Add IPAddress.
 
 PATH=/usr/afsws/bin:$PATH
 Dispatcher_URL="http://cnsh.insight.rnd.ericsson.se/dispatcher/doc/create"
@@ -64,11 +65,15 @@ if [ ! -d /etc/sudoers.d/ ]; then
     mkdir /etc/sudoers.d/ && chmod 750 /etc/sudoers.d/
 fi
 
+# Output Puppet Facts for further use
+/opt/puppet/bin/facter > /var/tmp/PuppetFacts
+
 
 
 #####################################################################
 # Check for writeable directory for our output
 Hostname=`uname -n | cut -d"." -f1` # Hostname used inside ()
+IPAddress=`grep "ipaddress =>" /var/tmp/PuppetFacts | awk '{print $3}'`
 OutputDir=/proj/cnshrepo/statuscheck/
 LocalInsightStatus=/var/tmp/$Hostname.InsightStatus
 LocalReportFile=/var/tmp/$Hostname.FunctionReport
@@ -162,7 +167,8 @@ elif [ "`uname -s`" = "SunOS" ]; then
    CPU=`psrinfo -vp | head -1 | cut -d' ' -f5`
    MemTotal=`prtconf | grep Memory | awk {'print $3'}`"MB"
    MemUsage="***Not Supported**"
-   LoadAverage=`uptime | cut -d':' -f4 | sed 's/ //g'`
+#   LoadAverage=`uptime | cut -d':' -f4 | sed 's/ //g'`
+   LoadAverage=`prstat 1 1 | grep average | cut -d':' -f3 | sed 's/ //g'`
 else
    CPU="CPU"
    MemTotal="MemTotal"
@@ -654,6 +660,7 @@ fi
 (
    echo "--Detailed Status-----------------------------"
    echo "Hostname                      = $Hostname"
+   echo "IPAddress                     = $IPAddress"
    echo "CheckTime                     = $CheckTime"
    echo "ScriptRunTime                 = $ScriptRunTime"
    echo "ScriptPath                    = $ScriptPath"
