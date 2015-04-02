@@ -66,6 +66,7 @@ if [ ! -d /etc/sudoers.d/ ]; then
 fi
 
 # Output Puppet Facts for further use
+LocalPuppetFacts=/var/tmp/PuppetFacts
 /opt/puppet/bin/facter > /var/tmp/PuppetFacts
 
 
@@ -79,6 +80,7 @@ LocalInsightStatus=/var/tmp/$Hostname.InsightStatus
 LocalReportFile=/var/tmp/$Hostname.FunctionReport
 ReportFile=/proj/cnshrepo/statuscheck/logs/$Hostname.report
 InsightStatus=/proj/cnshrepo/statuscheck/insightstatus/$Hostname
+PuppetFacts=/proj/cnshrepo/statuscheck/puppetfacts/$Hostname
 # Check for writability
 touch $ReportFile
 if [ $? -ne 0 ]; then
@@ -720,3 +722,4 @@ fi
 cat $LocalReportFile
 cp $LocalReportFile $ReportFile
 cp $LocalInsightStatus $InsightStatus
+cp $LocalPuppetFacts $PuppetFacts
