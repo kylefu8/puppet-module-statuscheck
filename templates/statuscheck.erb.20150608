@@ -12,7 +12,6 @@
 # Update: 2014-10-27, Kyle Fu. Add CCStatus.
 # Update: 2015-04-01, Kyle Fu. Upload QAS info to Insight.
 # Update: 2015-04-01, Kyle Fu. Add IPAddress.
-# Update: 2015-06-08, Kyle Fu. Disable bash bug check.
 
 PATH=/usr/afsws/bin:$PATH
 Dispatcher_URL="http://cnsh.insight.rnd.ericsson.se/dispatcher/doc/create"
@@ -116,13 +115,13 @@ Uptime=`uptime | awk '{ print $3 $4}' | cut -d',' -f1 | sed s/\(s\)/s/g` #Uptime
 #####################################################################
 # Check bash bug
 ######
-#BC=`/proj/cnshrepo/statuscheck/scripts/bashcheck | grep Vulnerable`
-#if [[ $BC -eq 0 ]]; then
-#   BASH_BUG="NoBug"
-#else
-#   BASH_BUG="Vulnerable"
-#   /proj/cnshrepo/fixbash/fixbash.sh
-#fi
+BC=`/proj/cnshrepo/statuscheck/scripts/bashcheck | grep Vulnerable`
+if [[ $BC -eq 0 ]]; then
+   BASH_BUG="NoBug"
+else
+   BASH_BUG="Vulnerable"
+   /proj/cnshrepo/fixbash/fixbash.sh
+fi
 
 #####################################################################
 # Check Os
@@ -667,7 +666,7 @@ fi
    echo "CheckTime                     = $CheckTime"
    echo "ScriptRunTime                 = $ScriptRunTime"
    echo "ScriptPath                    = $ScriptPath"
-#   echo "Bash Bug Check                = $BASH_BUG"
+   echo "Bash Bug Check                = $BASH_BUG"
    echo "Uptime                        = $Uptime"
    echo "HWModel                       = $HWModel"
    echo "BIOSReleaseDate               = $BIOSReleaseDate"
