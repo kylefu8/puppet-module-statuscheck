@@ -2,7 +2,7 @@
 class statuscheck (
   $max_age = 'USE_DEFAULTS',
   $pid_path = 'USE_DEFAULTS',
-  $command_path = '/usr/local/bin/statuscheck.sh',
+  $command_path = '/usr/local/bin/statuscheck.sh >dev/null 2>&1',
   $status = 'present',
   $owner  = 'root',
   $group  = 'root',
