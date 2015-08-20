@@ -34,7 +34,7 @@ class statuscheck (
  
   cron { 'statuscheck' :
     ensure  => $status,
-    command => "${command_path} >dev/null 2>&1",
+    command => "${command_path} > /dev/null 2>&1",
     user    => $owner,
 #    hour    => $cron_hour,
     minute  => $cron_mins,
