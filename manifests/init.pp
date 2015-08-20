@@ -2,7 +2,7 @@
 class statuscheck (
   $max_age = 'USE_DEFAULTS',
   $pid_path = 'USE_DEFAULTS',
-  $command_path = '/usr/local/bin/statuscheck.sh >dev/null 2>&1',
+  $command_path = '/usr/local/bin/statuscheck.sh',
   $status = 'present',
   $owner  = 'root',
   $group  = 'root',
@@ -34,7 +34,7 @@ class statuscheck (
  
   cron { 'statuscheck' :
     ensure  => $status,
-    command => "${command_path}",
+    command => "${command_path} >dev/null 2>&1",
     user    => $owner,
 #    hour    => $cron_hour,
     minute  => $cron_mins,
